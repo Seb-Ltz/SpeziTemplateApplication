@@ -8,9 +8,9 @@
 
 @preconcurrency import FirebaseFirestore
 @preconcurrency import FirebaseStorage
+@preconcurrency import PDFKit
 import HealthKitOnFHIR
 import OSLog
-import PDFKit
 import Spezi
 import SpeziAccount
 import SpeziFirebaseAccount
@@ -24,7 +24,7 @@ import SwiftUI
 actor TemplateApplicationStandard: Standard,
                                    EnvironmentAccessible,
                                    HealthKitConstraint,
-                                   OnboardingConstraint,
+                                   ConsentConstraint,
                                    AccountNotifyConstraint {
     @Application(\.logger) private var logger
 
@@ -99,27 +99,31 @@ actor TemplateApplicationStandard: Standard,
     
     /// Stores the given consent form in the user's document directory with a unique timestamped filename.
     ///
-    /// - Parameter consent: The consent form's data to be stored as a `PDFDocument`.
+    /// - Parameter consent: The consent form's data as a `ConsentDocumentExport`, containing the PDF document to be stored.
     @MainActor
-    func store(consent: PDFDocument) async {
+    func store(consent: ConsentDocumentExport) async throws {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HHmmss"
         let dateString = formatter.string(from: Date())
-
+        
+        let pdf = await consent.pdf
+        let documentIdentifier = await consent.documentIdentifier
+        let filename = "\(documentIdentifier)_\(dateString).pdf"
+        
         guard !FeatureFlags.disableFirebase else {
             guard let basePath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
                 await logger.error("Could not create path for writing consent form to user document directory.")
                 return
             }
             
-            let filePath = basePath.appending(path: "consentForm_\(dateString).pdf")
-            consent.write(to: filePath)
+            let filePath = basePath.appending(path: filename)
+            pdf.write(to: filePath)
             
             return
         }
         
         do {
-            guard let consentData = consent.dataRepresentation() else {
+            guard let consentData = pdf.dataRepresentation() else {
                 await logger.error("Could not store consent form.")
                 return
             }
@@ -127,7 +131,7 @@ actor TemplateApplicationStandard: Standard,
             let metadata = StorageMetadata()
             metadata.contentType = "application/pdf"
             _ = try await configuration.userBucketReference
-                .child("consent/\(dateString).pdf")
+                .child("consent/\(filename)")
                 .putDataAsync(consentData, metadata: metadata) { @Sendable _ in }
         } catch {
             await logger.error("Could not store consent form: \(error)")
